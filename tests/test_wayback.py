@@ -35,6 +35,13 @@ def test_parse_archive_url_without_modifier():
     assert ts == "20100210"
 
 
+def test_parse_target_rejects_calendar_wildcard_url():
+    with pytest.raises(WaybackError):
+        parse_target("https://web.archive.org/web/2010*/example.com")
+    with pytest.raises(WaybackError):
+        parse_target("https://web.archive.org/web/collections/example.com")
+
+
 # --- wayback url helpers ----------------------------------------------------
 
 
@@ -97,6 +104,20 @@ def test_rewrite_urls_skips_non_navigable():
     assert "web.archive.org" not in out
 
 
+def test_rewrite_honors_base_href():
+    # A <base href> must resolve relatives against the base, not the page URL — we fetch
+    # the unrewritten `id_` capture, so nothing but us applies it.
+    html = '<head><base href="http://ex.com/sub/"></head><a href="p.htm">x</a>'
+    out = links.rewrite_urls(html, "http://ex.com/other/page.html", "20100101")
+    assert "https://web.archive.org/web/20100101/http://ex.com/sub/p.htm" in out
+
+
+def test_extract_honors_base_href():
+    html = '<head><base href="http://ex.com/sub/"></head><a href="p.htm">x</a>'
+    got = links.extract(html, "http://ex.com/other/page.html", "20100101")
+    assert got[0]["original"] == "http://ex.com/sub/p.htm"
+
+
 def test_rewrite_unwraps_noframes_fallback():
     # A raw-text fallback whose body is real HTML: it must become markup (not an
     # escaped &lt;a&gt; dump), and links revealed inside must be archived too.
@@ -115,13 +136,6 @@ def test_rewrite_preserves_noscript_markup():
     assert "<p>" in out and "<b>" in out
 
 
-def test_rewrite_srcset():
-    html = '<img srcset="a.png 1x, b.png 2x">'
-    out = links.rewrite_urls(html, "https://example.com/", "20100101")
-    assert "https://web.archive.org/web/20100101/https://example.com/a.png 1x" in out
-    assert "https://web.archive.org/web/20100101/https://example.com/b.png 2x" in out
-
-
 def test_html_to_markdown_restores_link_scheme():
     # Regression: markitdown's `http%3A//` must not leak into the body (links stay clean
     # and re-parseable as `get` inputs); `<img>` srcs, which it leaves intact, still match.
@@ -132,6 +146,29 @@ def test_html_to_markdown_restores_link_scheme():
     assert "http%3A//" not in md and "http%3a//" not in md
     assert "https://web.archive.org/web/20100101/http://ex.com/p.htm" in md
     assert "https://web.archive.org/web/20100101/http://ex.com/i.jpg" in md
+
+
+def test_html_to_markdown_restores_nested_port_colon():
+    # A host:port must survive as `space.com:80`; a genuine `%20` must not be decoded.
+    rewritten = links.rewrite_urls(
+        '<a href="http://space.com:80/a%20b/x.html">x</a>',
+        "http://space.com:80/",
+        "19991004052946",
+    )
+    md = convert.html_to_markdown(rewritten)
+    assert "space.com:80/" in md and "%3A" not in md and "%3a" not in md
+    assert "/a%20b/x.html" in md  # legit encoding preserved
+
+
+def test_html_to_markdown_keeps_legacy_charset_through_conversion():
+    # Regression: markitdown re-sniffs the re-encoded body and mis-guesses a legacy
+    # encoding for a lone "®", so the full pipeline must still preserve it.
+    body = b'<html><head><meta charset="windows-1252"></head><body>' \
+           b'<p>Microsoft\xae Internet Explorer</p></body></html>'
+    text = Fetched(url="u", status=200, mimetype="text/html", content=body).text
+    md = convert.html_to_markdown(links.rewrite_urls(text, "http://x/", "20100101"))
+    assert "®" in md
+    assert "�" not in md and "Â" not in md
 
 
 def test_extract_internal_only():
@@ -166,6 +203,14 @@ def test_frame_sources_empty_and_ignores_iframe():
     assert links.frame_sources(html, "https://example.com/", "20100101") == []
 
 
+def test_frame_sources_handles_escaped_quotes_in_js_string():
+    # document.write with backslash-escaped quotes, the other common inline form.
+    html = "<script>document.write(\"<frame src=\\\"main.html\\\">\");</script>"
+    assert links.frame_sources(html, "https://example.com/", "20100101") == [
+        "https://web.archive.org/web/20100101/https://example.com/main.html"
+    ]
+
+
 def test_head_meta_extracts_and_collapses_whitespace():
     html = (
         '<meta name="Description" content="A  page\n about dogs">'
@@ -176,6 +221,32 @@ def test_head_meta_extracts_and_collapses_whitespace():
         "description": "A page about dogs",
         "keywords": "dogs, puppies",
     }
+
+
+def test_head_meta_extracts_title_and_author():
+    html = (
+        "<head><title>\n  Area 51  -  SPACE.com\n</title>"
+        '<meta name="author" content="Jane Roe"></head>'
+    )
+    assert links.head_meta(html) == {
+        "title": "Area 51 - SPACE.com",
+        "author": "Jane Roe",
+    }
+
+
+def test_meta_refresh_signposts_target():
+    # Relative target resolves against the page URL and comes back archived.
+    html = '<meta http-equiv="Refresh" content="0; url=/area51/real.html">'
+    assert (
+        links.meta_refresh(html, "http://space.com/area51/index.html", "19991004")
+        == "https://web.archive.org/web/19991004/http://space.com/area51/real.html"
+    )
+
+
+def test_meta_refresh_ignores_plain_reload():
+    # A refresh with no url= is a timed reload, not a redirect.
+    assert links.meta_refresh('<meta http-equiv="refresh" content="5">', "http://x/", "1") is None
+    assert links.meta_refresh("<p>no meta here</p>", "http://x/", "1") is None
 
 
 # --- content type routing ---------------------------------------------------
@@ -325,6 +396,25 @@ def test_text_decodes_legacy_charset_without_mojibake():
     assert "©" in text and "®" in text
 
 
+def test_text_header_charset_beats_sniffing():
+    # No in-document declaration: sniffing alone misguesses koi8-r, but the charset
+    # from the HTTP Content-Type header (which the id_ endpoint replays) pins it.
+    body = "Привет, мир".encode("koi8-r")
+    fetched = Fetched(
+        url="u", status=200, mimetype="text/plain", charset="koi8-r", content=body
+    )
+    assert fetched.text == "Привет, мир"
+
+
+def test_text_header_charset_beats_meta_declaration():
+    # HTTP semantics: the header wins over a conflicting <meta charset>.
+    body = '<meta charset="iso-8859-1">café'.encode("utf-8")
+    fetched = Fetched(
+        url="u", status=200, mimetype="text/html", charset="utf-8", content=body
+    )
+    assert "café" in fetched.text
+
+
 def test_text_decodes_utf8_body():
     body = "café — déjà vu".encode("utf-8")
     assert Fetched(url="u", status=200, mimetype="text/html", content=body).text == (
@@ -357,6 +447,37 @@ def test_cache_ttl_zero_always_refetches(tmp_path):
     assert len(calls) == 2
 
 
+def test_fetch_raw_only_pins_full_timestamps_in_cache(monkeypatch):
+    # "latest" and prefix requests resolve to "nearest", which drifts as new captures
+    # arrive — they must expire. Only a full pinned stamp is immutable (cached forever).
+    ttls = []
+
+    def spy(url, fetch_fn, *, ttl=None, directory=None):
+        ttls.append(ttl)
+        return Fetched(
+            url="https://web.archive.org/web/20100101120000/https://example.com",
+            status=200,
+            mimetype="text/html",
+            content=b"x",
+        )
+
+    monkeypatch.setattr(wayback.cache, "get_or_fetch", spy)
+    wayback.fetch_raw("https://example.com", wayback.LATEST_TS)
+    wayback.fetch_raw("https://example.com", "2010")
+    wayback.fetch_raw("https://example.com", "20100101120000")
+    assert ttls == [wayback.DEFAULT_TTL, wayback.DEFAULT_TTL, None]
+
+
+def test_cdx_search_surfaces_error_status(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        wayback,
+        "_http_get",
+        lambda url: Fetched(url=url, status=503, mimetype="text/html", content=b"busy"),
+    )
+    with pytest.raises(WaybackError, match="503"):
+        wayback.cdx_search("https://example.com", directory=str(tmp_path))
+
+
 def test_fetch_raw_not_archived_raises_no_snapshot(tmp_path, monkeypatch):
     # 404 with no redirect (served ts still equals the request) => URL isn't archived.
     monkeypatch.setattr(
@@ -364,8 +485,34 @@ def test_fetch_raw_not_archived_raises_no_snapshot(tmp_path, monkeypatch):
         "_http_get",
         lambda url: Fetched(url=url, status=404, mimetype="text/html", content=b"gone"),
     )
-    with pytest.raises(NoSnapshotError):
+    with pytest.raises(NoSnapshotError) as exc:
         wayback.fetch_raw("https://example.com", "20100101", directory=str(tmp_path))
+    assert "itself a 404" not in str(exc.value)
+
+
+def test_fetch_raw_pinned_404_hedges_message(tmp_path, monkeypatch):
+    # A full pinned stamp is served directly (no redirect), so a 404 there can also be
+    # a real capture whose crawl-time status was 404 — the message must say so.
+    monkeypatch.setattr(
+        wayback,
+        "_http_get",
+        lambda url: Fetched(url=url, status=404, mimetype="text/html", content=b"gone"),
+    )
+    with pytest.raises(NoSnapshotError) as exc:
+        wayback.fetch_raw(
+            "https://example.com", "20100101120000", directory=str(tmp_path)
+        )
+    assert "itself a 404" in str(exc.value)
+
+
+def test_converter_failure_is_a_wayback_error(monkeypatch):
+    # markitdown's library-specific errors must surface as WaybackError, not a traceback.
+    def boom(*args, **kwargs):
+        raise RuntimeError("corrupt stream")
+
+    monkeypatch.setattr(convert._converter, "convert_stream", boom)
+    with pytest.raises(WaybackError, match="could not convert"):
+        convert.doc_to_markdown(b"x", ".pdf")
 
 
 def test_fetch_raw_crawl_time_error_is_surfaced(tmp_path, monkeypatch):

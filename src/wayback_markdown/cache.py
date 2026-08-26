@@ -1,8 +1,8 @@
 """Dead-simple on-disk cache for archive requests.
 
 Every HTTP call to the Internet Archive routes through :func:`get_or_fetch`, keyed by
-the exact request URL. Snapshot fetches (an immutable capture) are cached forever;
-CDX lookups pass a TTL so their drifting "latest" answer expires.
+the exact request URL. Fully-pinned snapshot fetches (an immutable capture) are cached
+forever; CDX and nearest-capture lookups pass a TTL so their drifting answer expires.
 
 The cache lives in ``/tmp/wayback-markdown-cache`` by default (ephemeral, and snapshots are
 always re-fetchable), overridable via ``$WAYBACK_MARKDOWN_CACHE`` or an explicit ``cache_dir``.
@@ -31,19 +31,25 @@ class Fetched:
     status: int
     mimetype: str
     content: bytes
+    charset: str = ""  # charset parameter of the HTTP Content-Type header, if any
     redirect_history: List[str] = field(default_factory=list)
     saved_at: float = 0.0  # unix time the entry was written (0 => live, not from cache)
 
     @property
     def text(self) -> str:
         """Decode the body by its charset. Legacy captures are often Windows-1252/Latin-1,
-        not UTF-8; ``UnicodeDammit`` honours a ``<meta charset>``/BOM declaration and only
-        sniffs as a fallback, so a byte like ``®`` (0xAE) never becomes a replacement char."""
+        not UTF-8; the header-declared charset is tried first (HTTP semantics — the `id_`
+        endpoint replays the original response headers), then a ``<meta charset>``/BOM
+        declaration, then sniffing, so a byte like ``®`` (0xAE) never becomes a
+        replacement char."""
         if not self.content:
             return ""
-        return UnicodeDammit(self.content).unicode_markup or self.content.decode(
-            "utf-8", errors="replace"
+        dammit = UnicodeDammit(
+            self.content,
+            known_definite_encodings=[self.charset] if self.charset else None,
+            is_html=True,  # honour <meta charset>; harmless for plain text
         )
+        return dammit.unicode_markup or self.content.decode("utf-8", errors="replace")
 
 
 def cache_dir(explicit: Optional[str] = None) -> Path:
@@ -66,6 +72,7 @@ def _load(meta_path: Path, body_path: Path) -> Optional[Fetched]:
             url=meta["url"],
             status=meta["status"],
             mimetype=meta["mimetype"],
+            charset=meta.get("charset", ""),
             redirect_history=meta.get("redirect_history", []),
             saved_at=meta.get("saved_at", 0.0),
             content=body_path.read_bytes(),

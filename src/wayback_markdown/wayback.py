@@ -1,8 +1,9 @@
 """Internet Archive client: CDX listing, timestamp resolution, raw snapshot fetch.
 
 All network access goes through :mod:`wayback_markdown.cache`, so identical requests are
-served from disk. Snapshot fetches are cached forever (a capture is immutable); CDX
-lookups use a TTL because their "latest/closest" answer drifts.
+served from disk. A snapshot pinned to a full timestamp is cached forever (that capture
+is immutable); everything whose answer drifts as new captures arrive — CDX lookups, and
+snapshot requests for a prefix or the latest sentinel — uses a TTL.
 """
 
 from __future__ import annotations
@@ -24,7 +25,8 @@ USER_AGENT = (
     f"wayback-markdown/{__version__} "
     "(+https://github.com/ertug/wayback-markdown; agent CLI)"
 )
-HTTP_TIMEOUT = 30.0
+# Wayback is slow to connect and to stream, so split the phases with a generous read.
+HTTP_TIMEOUT = httpx.Timeout(connect=30.0, read=60.0, write=10.0, pool=10.0)
 DEFAULT_TTL = 24 * 3600.0
 
 # Far-future sentinel: Wayback redirects `/web/<ts>id_/<url>` to the nearest capture, so
@@ -37,8 +39,8 @@ class WaybackError(Exception):
 
 
 class NoSnapshotError(WaybackError):
-    def __init__(self, url: str):
-        super().__init__(f"No archived snapshot found for: {url}")
+    def __init__(self, url: str, detail: str = ""):
+        super().__init__(f"No archived snapshot found for: {url}{detail}")
         self.url = url
 
 
@@ -105,6 +107,7 @@ def _http_get(request_url: str) -> Fetched:
         url=str(resp.url),
         status=resp.status_code,
         mimetype=mimetype,
+        charset=resp.charset_encoding or "",
         content=resp.content,
         redirect_history=history,
     )
@@ -145,6 +148,9 @@ def cdx_search(
     fetched = cache.get_or_fetch(
         request_url, lambda: _http_get(request_url), ttl=DEFAULT_TTL, directory=directory
     )
+    # An error page would otherwise json-parse to an affirmative "no captures found".
+    if fetched.status >= 400:
+        raise WaybackError(f"CDX API returned HTTP {fetched.status}; try again later")
     return parse_cdx(fetched.text)
 
 
@@ -167,20 +173,33 @@ def fetch_raw(orig_url: str, timestamp: str, directory: Optional[str] = None) ->
     """Fetch the toolbar-free ('id_') snapshot, following redirects, via the cache.
 
     Wayback redirects the requested timestamp to the nearest real capture; the served
-    timestamp on the final URL is the precise stamp of that capture. Two failure modes:
+    timestamp on the final URL is the precise stamp of that capture. Only a full pinned
+    stamp is cached forever: a prefix or the latest sentinel resolves to "nearest",
+    which drifts as new captures arrive, so those expire. Two failure modes:
 
-    * No redirect happened and we got a 404 — the URL isn't archived at all.
+    * No redirect happened and we got a 404 — the URL isn't archived at that address
+      (or, for a full pinned stamp, the capture itself recorded a 404 — the message hedges).
     * We landed on a real capture whose crawl-time status was an error — surface it, so
       an archive error page is never handed downstream and converted as if it were the page.
     """
+    ts_digits = normalize_ts(timestamp)
+    pinned = len(ts_digits) == 14 and ts_digits != LATEST_TS
     request_url = snapshot_url(orig_url, timestamp)
     fetched = cache.get_or_fetch(
-        request_url, lambda: _http_get(request_url), ttl=None, directory=directory
+        request_url,
+        lambda: _http_get(request_url),
+        ttl=None if pinned else DEFAULT_TTL,
+        directory=directory,
     )
     if fetched.status >= 400:
         served_ts = parse_served_ts(fetched.url)
-        if fetched.status == 404 and served_ts == normalize_ts(timestamp):
-            raise NoSnapshotError(orig_url)
+        if fetched.status == 404 and served_ts == ts_digits:
+            detail = (
+                " (or the capture at exactly this timestamp was itself a 404)"
+                if pinned
+                else ""
+            )
+            raise NoSnapshotError(orig_url, detail)
         raise WaybackError(
             f"archive returned HTTP {fetched.status} for capture "
             f"{served_ts or timestamp} of {orig_url}"

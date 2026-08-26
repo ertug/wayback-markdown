@@ -71,8 +71,11 @@ class Meta:
     mimetype: str
     total_chars: int
     frames: List[str] = field(default_factory=list)
+    refresh: Optional[str] = None
+    title: Optional[str] = None
     description: Optional[str] = None
     keywords: Optional[str] = None
+    author: Optional[str] = None
 
     @property
     def served_differs(self) -> bool:
@@ -100,14 +103,20 @@ def metadata_frontmatter(meta: Meta) -> str:
     if meta.redirect_history:
         lines.append("redirects:")
         lines.extend(f"  - {url}" for url in meta.redirect_history)
+    if meta.refresh:
+        lines.append(f"meta-refresh: {meta.refresh}")
     if meta.frames:
         lines.append("frames:")
         lines.extend(f"  - {url}" for url in meta.frames)
     lines.append(f"mimetype: {meta.mimetype or 'unknown'}")
+    if meta.title:
+        lines.append(f"title: {_meta_scalar(meta.title)}")
     if meta.description:
         lines.append(f"description: {_meta_scalar(meta.description)}")
     if meta.keywords:
         lines.append(f"keywords: {_meta_scalar(meta.keywords)}")
+    if meta.author:
+        lines.append(f"author: {_meta_scalar(meta.author)}")
     lines.append(f"markdown-chars: {meta.total_chars}")
     lines.append("---")
     return "\n".join(lines)

@@ -37,6 +37,7 @@ wayback-markdown links example.com --at 2010 --internal-only --json
 2. `get` the capture. `--at <date|timestamp>` picks the closest; omit for latest.
 3. Body truncated? Re-fetch the next slice with `--offset <chars>` (matching `--max-chars`).
 4. Follow the page: any link in the output is a valid `get` argument; or use `links`.
+5. Near-empty body? Check the frontmatter for `frames:` or `meta-refresh:` and `get` one.
 
 ## Notes
 

@@ -12,7 +12,9 @@ import re
 from typing import Optional
 from urllib.parse import urlsplit
 
-from markitdown import MarkItDown
+from markitdown import MarkItDown, StreamInfo
+
+from .wayback import WEB_BASE, WaybackError
 
 _converter = MarkItDown()
 
@@ -83,24 +85,39 @@ def classify(mimetype: str, url: str = "") -> Kind:
     return Kind.UNSUPPORTED
 
 
-def _convert_stream(data: bytes, extension: str) -> str:
-    result = _converter.convert_stream(io.BytesIO(data), file_extension=extension)
+def _convert_stream(data: bytes, extension: str, charset: Optional[str] = None) -> str:
+    # A known charset is declared via StreamInfo so markitdown trusts it instead of
+    # re-sniffing — its sniffer mis-guesses a legacy encoding for byte patterns with
+    # few non-ASCII chars (e.g. a lone "®"), reintroducing mojibake.
+    try:
+        if charset is not None:
+            stream_info = StreamInfo(extension=extension, charset=charset)
+            result = _converter.convert_stream(io.BytesIO(data), stream_info=stream_info)
+        else:
+            result = _converter.convert_stream(io.BytesIO(data), file_extension=extension)
+    except Exception as exc:
+        raise WaybackError(f"could not convert capture to Markdown: {exc}") from exc
     return (result.text_content or "").strip()
 
 
-# markitdown percent-encodes the scheme colon of a nested URL (our archived link's
-# ``http://…`` becomes ``http%3A//…``), but only in ``<a>`` targets, not ``<img>`` srcs;
-# restoring it keeps links clean and re-parseable as ``get`` inputs.
-_ENCODED_SCHEME = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*)%3[Aa]//")
+# markitdown percent-encodes the reserved chars of the nested URL inside our archive
+# links (``http%3A//space.com%3A80``). Decode the colon back — only inside archive-link
+# destinations, and only that octet, so genuinely-encoded bytes like ``%20`` survive — to
+# keep links clean and re-parseable as ``get`` inputs.
+_ARCHIVE_DEST = re.compile(r"(?<=\]\()" + re.escape(WEB_BASE) + r"/[^)\s]+")
 
 
-def _restore_encoded_schemes(markdown: str) -> str:
-    return _ENCODED_SCHEME.sub(r"\1://", markdown)
+def _restore_archive_colons(markdown: str) -> str:
+    return _ARCHIVE_DEST.sub(
+        lambda m: m.group(0).replace("%3A", ":").replace("%3a", ":"), markdown
+    )
 
 
 def html_to_markdown(html: str) -> str:
     """Convert an HTML/text string to Markdown."""
-    return _restore_encoded_schemes(_convert_stream(html.encode("utf-8"), ".html"))
+    return _restore_archive_colons(
+        _convert_stream(html.encode("utf-8"), ".html", charset="utf-8")
+    )
 
 
 def doc_to_markdown(data: bytes, extension: str) -> str:

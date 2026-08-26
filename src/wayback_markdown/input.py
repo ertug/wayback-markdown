@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from typing import Optional, Tuple
 
-from .wayback import split_archive_url
+from .wayback import WaybackError, split_archive_url
 
 
 def _ensure_scheme(url: str) -> str:
@@ -26,10 +26,19 @@ def parse_target(s: str) -> Tuple[str, Optional[str]]:
 
     If ``s`` is a Wayback archive URL, the embedded timestamp is returned; otherwise
     the timestamp is ``None`` and the caller resolves one (``--at``/latest).
+
+    A ``web.archive.org`` URL that isn't a snapshot URL (a calendar/wildcard view
+    like ``/web/2010*/…``) is rejected rather than fetched as an "original URL".
     """
     s = s.strip()
     parts = split_archive_url(s)
     if parts:
         orig, ts = parts
         return _ensure_scheme(orig), ts
+    if re.match(r"^https?://web\.archive\.org/", s, re.IGNORECASE):
+        raise WaybackError(
+            f"unsupported web.archive.org URL (a calendar/wildcard view?): {s} — "
+            "pass a snapshot URL like https://web.archive.org/web/<timestamp>/<url>, "
+            "or the original URL with --at"
+        )
     return _ensure_scheme(s), None

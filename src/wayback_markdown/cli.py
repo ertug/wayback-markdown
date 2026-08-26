@@ -170,12 +170,14 @@ def cmd_get(args) -> int:
     fetched = r.fetched
 
     frames: List[str] = []
+    refresh: Optional[str] = None
     page_meta: dict = {}
     kind = convert.classify(fetched.mimetype, fetched.url)
     if kind is convert.Kind.HTML:
         rewritten = links.rewrite_urls(fetched.text, r.orig, r.served_ts)
         markdown = convert.html_to_markdown(rewritten)
         frames = links.frame_sources(fetched.text, r.orig, r.served_ts)
+        refresh = links.meta_refresh(fetched.text, r.orig, r.served_ts)
         page_meta = links.head_meta(fetched.text)
     elif kind is convert.Kind.TEXT:
         markdown = fetched.text
@@ -199,8 +201,11 @@ def cmd_get(args) -> int:
         mimetype=fetched.mimetype,
         total_chars=len(markdown),
         frames=frames,
+        refresh=refresh,
+        title=page_meta.get("title"),
         description=page_meta.get("description"),
         keywords=page_meta.get("keywords"),
+        author=page_meta.get("author"),
     )
     chunk, info = output.truncate(markdown, args.max_chars, args.offset)
 

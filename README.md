@@ -18,21 +18,26 @@ context.
   leads with a YAML frontmatter block (capture time, redirects, status), truncates to a
   character budget, and pages the rest on demand, so the agent gets the signals up front.
 - **Toolbar-free** — no injected Wayback UI leaks into the Markdown.
-- **Self-navigating** — every URL in the page (links, images, css, js) is rewritten to its
-  archived form. Links in the output are valid `get` inputs: paste one back in to keep browsing.
-- **Cached** — identical requests are served from `/tmp/wayback-markdown-cache`.
+- **Self-navigating** — every link and image is rewritten to its archived form (honoring
+  `<base href>`). Links in the output are valid `get` inputs: paste one back in to keep browsing.
+- **Cached** — identical requests are served from `/tmp/wayback-markdown-cache`. A capture
+  addressed by its full timestamp is cached forever (it's immutable); "latest"/nearest
+  lookups refresh daily.
 - **Unblocked** — `web.archive.org` is typically off-limits to AI agents
   (e.g. Claude Code's built-in `WebFetch` refuses the host). This tool fetches the raw
   `…id_/…` endpoint directly over `httpx`, so an agent can read captures anyway.
-- **Redirect-aware** — surfaces both archive redirects (you got a different capture than asked)
-  and crawl-time redirects (the page was a 3xx when captured).
-- **Meta-aware** — surfaces the `description`/`keywords` `<meta>` tags markitdown drops.
+- **Redirect-aware** — surfaces archive redirects (you got a different capture than asked),
+  crawl-time redirects (the page was a 3xx when captured), and client-side `<meta refresh>`
+  redirects.
+- **Meta-aware** — surfaces the `<title>` and `description`/`keywords`/`author` `<meta>`
+  tags markitdown drops.
 - **Frame-aware** — the frontmatter lists each `<frame>` target as a ready `get` input
   (including ones written at runtime by `document.write`).
 - **Fallback-aware** — re-parses `<noframes>`/`<noscript>` bodies as markup, so a page whose
   real content hides in one converts properly instead of dumping unparsed tags.
-- **Charset-aware** — decodes each capture by its declared `<meta charset>`/BOM (sniffing only
-  as a fallback), so legacy Windows-1252/Latin-1 pages keep bytes like `®` instead of `�`.
+- **Charset-aware** — decodes each capture by its declared charset (HTTP `Content-Type`
+  header first, then `<meta charset>`/BOM, sniffing only as a fallback), so legacy
+  Windows-1252/Latin-1 pages keep bytes like `®` instead of `�`.
 
 ## Demo
 
@@ -51,6 +56,7 @@ http-status: 200
 redirects:
   - https://web.archive.org/web/1997id_/http://www.python.org
 mimetype: text/html
+title: "Python Language Home Page"
 description: "Home page for Python, an interpreted, interactive, object-oriented, extensible programming language. It provides an extraordinary combination of clarity and versatility, and is free and comprehensively ported."
 keywords: "Python programming language object oriented web free source"
 markdown-chars: 11225
