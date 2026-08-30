@@ -4,8 +4,9 @@ Every HTTP call to the Internet Archive routes through :func:`get_or_fetch`, key
 the exact request URL. Fully-pinned snapshot fetches (an immutable capture) are cached
 forever; CDX and nearest-capture lookups pass a TTL so their drifting answer expires.
 
-The cache lives in ``/tmp/wayback-markdown-cache`` by default (ephemeral, and snapshots are
-always re-fetchable), overridable via ``$WAYBACK_MARKDOWN_CACHE`` or an explicit ``cache_dir``.
+The cache lives under the OS temp directory (``/tmp/wayback-markdown-cache`` on Linux) by
+default (ephemeral, and snapshots are always re-fetchable), overridable via
+``$WAYBACK_MARKDOWN_CACHE``.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -20,7 +22,7 @@ from typing import Callable, List, Optional
 
 from bs4 import UnicodeDammit
 
-DEFAULT_CACHE_DIR = "/tmp/wayback-markdown-cache"
+DEFAULT_CACHE_DIR = os.path.join(tempfile.gettempdir(), "wayback-markdown-cache")
 
 
 @dataclass
@@ -52,8 +54,8 @@ class Fetched:
         return dammit.unicode_markup or self.content.decode("utf-8", errors="replace")
 
 
-def cache_dir(explicit: Optional[str] = None) -> Path:
-    path = Path(explicit or os.environ.get("WAYBACK_MARKDOWN_CACHE") or DEFAULT_CACHE_DIR)
+def cache_dir() -> Path:
+    path = Path(os.environ.get("WAYBACK_MARKDOWN_CACHE") or DEFAULT_CACHE_DIR).expanduser()
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -106,15 +108,13 @@ def get_or_fetch(
     fetch_fn: Callable[[], Fetched],
     *,
     ttl: Optional[float] = None,
-    directory: Optional[str] = None,
 ) -> Fetched:
     """Return a cached :class:`Fetched` for ``request_url`` or produce one via ``fetch_fn``.
 
     ``ttl`` in seconds: ``None`` caches indefinitely (immutable snapshots); a number
     expires entries older than it (CDX/availability). A fresh fetch is always stored.
     """
-    directory_path = cache_dir(directory)
-    meta_path, body_path = _paths(directory_path, request_url)
+    meta_path, body_path = _paths(cache_dir(), request_url)
 
     cached = _load(meta_path, body_path)
     if cached is not None:

@@ -25,8 +25,10 @@ USER_AGENT = (
     f"wayback-markdown/{__version__} "
     "(+https://github.com/ertug/wayback-markdown; agent CLI)"
 )
-# Wayback is slow to connect and to stream, so split the phases with a generous read.
-HTTP_TIMEOUT = httpx.Timeout(connect=30.0, read=60.0, write=10.0, pool=10.0)
+# Try to stay under the 60s MCP call deadline so httpx tends to time out first —
+# surfacing the transient-retry label rather than a generic client-side kill. Not a
+# guarantee: httpx timeouts are per-phase, so phases (and redirect hops) can add up.
+HTTP_TIMEOUT = httpx.Timeout(connect=25.0, read=50.0, write=10.0, pool=10.0)
 DEFAULT_TTL = 24 * 3600.0
 
 # Far-future sentinel: Wayback redirects `/web/<ts>id_/<url>` to the nearest capture, so
@@ -122,12 +124,17 @@ def cdx_search(
     from_: Optional[str] = None,
     to: Optional[str] = None,
     status: Optional[str] = None,
+    url_filter: Optional[str] = None,
+    mimetype: Optional[str] = None,
     match: str = "exact",
     collapse_day: bool = True,
     limit: int = 50,
-    directory: Optional[str] = None,
 ) -> List[Dict[str, str]]:
-    """Query the CDX API and return a list of capture rows as dicts."""
+    """Query the CDX API and return a list of capture rows as dicts.
+
+    ``status``/``url_filter``/``mimetype`` become CDX ``filter`` clauses, each a
+    regex matched against the ``statuscode``/``original``/``mimetype`` field.
+    """
     params = [
         ("url", orig_url),
         ("output", "json"),
@@ -141,12 +148,16 @@ def cdx_search(
         params.append(("to", normalize_ts(to)))
     if status:
         params.append(("filter", f"statuscode:{status}"))
+    if url_filter:
+        params.append(("filter", f"original:{url_filter}"))
+    if mimetype:
+        params.append(("filter", f"mimetype:{mimetype}"))
     if collapse_day:
         params.append(("collapse", "timestamp:8"))
 
     request_url = f"{CDX_URL}?{urlencode(params)}"
     fetched = cache.get_or_fetch(
-        request_url, lambda: _http_get(request_url), ttl=DEFAULT_TTL, directory=directory
+        request_url, lambda: _http_get(request_url), ttl=DEFAULT_TTL
     )
     # An error page would otherwise json-parse to an affirmative "no captures found".
     if fetched.status >= 400:
@@ -169,7 +180,7 @@ def parse_cdx(text: str) -> List[Dict[str, str]]:
     return [dict(zip(header, row)) for row in data]
 
 
-def fetch_raw(orig_url: str, timestamp: str, directory: Optional[str] = None) -> Fetched:
+def fetch_raw(orig_url: str, timestamp: str) -> Fetched:
     """Fetch the toolbar-free ('id_') snapshot, following redirects, via the cache.
 
     Wayback redirects the requested timestamp to the nearest real capture; the served
@@ -189,7 +200,6 @@ def fetch_raw(orig_url: str, timestamp: str, directory: Optional[str] = None) ->
         request_url,
         lambda: _http_get(request_url),
         ttl=None if pinned else DEFAULT_TTL,
-        directory=directory,
     )
     if fetched.status >= 400:
         served_ts = parse_served_ts(fetched.url)

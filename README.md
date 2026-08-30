@@ -1,9 +1,9 @@
 # wayback-markdown
 
-A [Wayback Machine](https://web.archive.org/) to Markdown CLI for AI coding agents.
+Let your AI agents browse the [Wayback Machine](https://web.archive.org/) in clean Markdown — an MCP server and CLI.
 
-It fetches an [Internet Archive](https://archive.org/) snapshot from the raw, toolbar-free endpoint, converts it
-to Markdown with [markitdown](https://github.com/microsoft/markitdown) (**HTML/text** plus
+It fetches an [Internet Archive](https://archive.org/) snapshot, converts it
+to agent-friendly Markdown with [markitdown](https://github.com/microsoft/markitdown) (**HTML/text** plus
 **PDF, DOCX, PPTX**), and returns a **metadata frontmatter + length-capped body** — so an
 agent sees the signals that matter (capture time, redirects, status) without flooding its
 context.
@@ -14,13 +14,14 @@ context.
 
 ## Why
 
+- **Agent-ready** — connect it to any AI agent or MCP client with a single command.
 - **Context-efficient** — spends few tokens per read: outputs Markdown (no HTML noise),
   leads with a YAML frontmatter block (capture time, redirects, status), truncates to a
   character budget, and pages the rest on demand, so the agent gets the signals up front.
 - **Toolbar-free** — no injected Wayback UI leaks into the Markdown.
 - **Self-navigating** — every link and image is rewritten to its archived form (honoring
   `<base href>`). Links in the output are valid `get` inputs: paste one back in to keep browsing.
-- **Cached** — identical requests are served from `/tmp/wayback-markdown-cache`. A capture
+- **Cached** — identical requests are served from a disk cache. A capture
   addressed by its full timestamp is cached forever (it's immutable); "latest"/nearest
   lookups refresh daily.
 - **Unblocked** — `web.archive.org` is typically off-limits to AI agents
@@ -39,7 +40,7 @@ context.
   header first, then `<meta charset>`/BOM, sniffing only as a fallback), so legacy
   Windows-1252/Latin-1 pages keep bytes like `®` instead of `�`.
 
-## Demo
+## Demo (CLI)
 
 ```console
 $ wayback-markdown get http://www.python.org --at 1997 --max-chars 500
@@ -69,30 +70,65 @@ markdown-chars: 11225
 [Workshops](https://web.archive.org/web/19980119014227/http://www.python.org/w
 
 
-[truncated: showing chars 0-500 of 11225 total. Re-run with --offset 500 for more.]
+[truncated: showing chars 0-500 of 11225 total. Continue from offset 500 for more.]
 ```
 
 ## Install
+
+Needs [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`, or see the [install docs](https://docs.astral.sh/uv/getting-started/installation/)):
 
 ```sh
 uv tool install git+https://github.com/ertug/wayback-markdown.git
 wayback-markdown --help
 ```
 
-To let an AI agent drive the tool, clone the repo and copy `skills/wayback-markdown/`
-into its skills dir:
+## MCP server
+
+Point any [MCP](https://modelcontextprotocol.io) client at the `mcp` subcommand, e.g. with Claude Code:
 
 ```sh
-git clone https://github.com/ertug/wayback-markdown.git
-cp -r wayback-markdown/skills/wayback-markdown ~/.claude/skills/     # Claude Code
-cp -r wayback-markdown/skills/wayback-markdown ~/.agents/skills/     # Codex
-cp -r wayback-markdown/skills/wayback-markdown ~/.gemini/config/skills/  # Antigravity
+claude mcp add wayback-markdown -- wayback-markdown mcp
 ```
+
+Or add it to an MCP client config directly:
+
+```json
+{
+  "mcpServers": {
+    "wayback-markdown": {
+      "command": "wayback-markdown",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Optionally, set the cache location by adding an `"env"` block — e.g. to keep it across
+reboots: `"env": { "WAYBACK_MARKDOWN_CACHE": "~/.cache/wayback-markdown" }`.
+
+## Tools
+
+- **`list`** — find captures of a URL: date range, HTTP status, URL/MIME-type regex
+  filters, and `match=prefix|domain` to sweep a whole path or site.
+- **`get`** — fetch a snapshot as frontmatter + Markdown; picks the capture closest to
+  `at`, truncates to `max_chars`, and pages long documents via `offset`.
+- **`links`** — list a snapshot's outbound links, each rewritten to its archived URL,
+  ready to `get`.
+
+The same tools are available as CLI subcommands (`wayback-markdown list|get|links`,
+see `--help`) — as used in the Demo and Formats sections.
+
+> [!WARNING]
+> Archived pages are untrusted third-party content. As with any web-fetching tool, the
+> output may contain text that tries to manipulate the agent (prompt injection).
+> The server's instructions do tell the agent to treat fetched content as page data,
+> never as directions to follow, but don't rely on that alone —
+> run the agent with least privilege and review what it does with fetched content.
 
 ## Prompt an agent
 
-With the [skill](skills/wayback-markdown/SKILL.md) installed, hand the agent a prompt and let it list, fetch, and
-follow captures on its own — ideal for the obscure and the long-gone:
+With the server connected, hand the agent a prompt and let it list, fetch, and follow
+captures on its own — ideal for the obscure and the long-gone:
 
 - "Poke around space.com's earliest captures and surface something interesting
   about the space news it led with back then."
@@ -100,26 +136,6 @@ follow captures on its own — ideal for the obscure and the long-gone:
   the fan theories it laid out about the show's conspiracy mythology."
 - "kuro5hin.org ran first-person essays on surviving the dot-com bust, now all 404 —
   recover one and summarize its story and where the comment thread landed."
-
-## Commands
-
-```sh
-# list — find captures
-wayback-markdown list example.com --from 2010 --to 2011 --status 200
-#   --match exact|prefix|domain   --no-collapse (per-capture, not per-day)   --limit   --json
-
-# get — fetch a snapshot as Markdown
-wayback-markdown get example.com --at 2010 --max-chars 8000
-wayback-markdown get example.com --at 20100210120000            # full stamp, closest capture
-wayback-markdown get example.com --at 2010 --offset 8000       # next slice
-wayback-markdown get 'https://web.archive.org/web/20100210/https://example.com/'
-#   pick a capture: --at <date-or-timestamp> (closest) | default (latest)
-#   a full archive URL carries its own timestamp   --max-chars (0 = unlimited)
-#   --no-frontmatter   body only, no metadata frontmatter (get is text-only; list/links have --json)
-
-# links — list outbound links, each as a ready `get` argument
-wayback-markdown links example.com --at 2010 --internal-only --limit 50
-```
 
 ## Formats
 
@@ -141,5 +157,5 @@ wayback-markdown get 'https://jwst.nasa.gov/resources/SPIE20128442-89RKeski-Kuha
 
 ## Configuration & development
 
-- `$WAYBACK_MARKDOWN_CACHE` (env var) or `--cache-dir` (flag) — cache location (default `/tmp/wayback-markdown-cache`).
-- `uv sync --extra dev` once, then `uv run pytest` — offline unit tests, no network.
+- `$WAYBACK_MARKDOWN_CACHE` (env var) — cache location (default `/tmp/wayback-markdown-cache` on Linux).
+- `uv sync` once, then `uv run pytest` — offline unit tests, no network.

@@ -10,6 +10,12 @@ from wayback_markdown.input import parse_target
 from wayback_markdown.wayback import NoSnapshotError, WaybackError
 
 
+@pytest.fixture(autouse=True)
+def isolated_cache(tmp_path, monkeypatch):
+    """Point the cache at a per-test temp dir, the same env var production uses."""
+    monkeypatch.setenv("WAYBACK_MARKDOWN_CACHE", str(tmp_path / "cache"))
+
+
 # --- input parsing ----------------------------------------------------------
 
 
@@ -309,7 +315,7 @@ def test_truncate_no_limit():
 
 def test_truncation_marker_points_to_next_offset():
     _, info = output.truncate("abcdefghij", 4, 0)
-    assert "--offset 4" in output.truncation_marker(info)
+    assert "offset 4" in output.truncation_marker(info)
 
 
 def test_human_ts_renders_only_the_precision_present():
@@ -430,20 +436,20 @@ def _counter_fetch(calls):
     return fetch
 
 
-def test_cache_hit_serves_second_call(tmp_path):
+def test_cache_hit_serves_second_call():
     calls = []
     fetch = _counter_fetch(calls)
-    cache.get_or_fetch("http://x/1", fetch, directory=str(tmp_path))
-    result = cache.get_or_fetch("http://x/1", fetch, directory=str(tmp_path))
+    cache.get_or_fetch("http://x/1", fetch)
+    result = cache.get_or_fetch("http://x/1", fetch)
     assert len(calls) == 1
     assert result.content == b"hi"
 
 
-def test_cache_ttl_zero_always_refetches(tmp_path):
+def test_cache_ttl_zero_always_refetches():
     calls = []
     fetch = _counter_fetch(calls)
-    cache.get_or_fetch("http://x/2", fetch, ttl=0.0, directory=str(tmp_path))
-    cache.get_or_fetch("http://x/2", fetch, ttl=0.0, directory=str(tmp_path))
+    cache.get_or_fetch("http://x/2", fetch, ttl=0.0)
+    cache.get_or_fetch("http://x/2", fetch, ttl=0.0)
     assert len(calls) == 2
 
 
@@ -452,7 +458,7 @@ def test_fetch_raw_only_pins_full_timestamps_in_cache(monkeypatch):
     # arrive — they must expire. Only a full pinned stamp is immutable (cached forever).
     ttls = []
 
-    def spy(url, fetch_fn, *, ttl=None, directory=None):
+    def spy(url, fetch_fn, *, ttl=None):
         ttls.append(ttl)
         return Fetched(
             url="https://web.archive.org/web/20100101120000/https://example.com",
@@ -468,17 +474,39 @@ def test_fetch_raw_only_pins_full_timestamps_in_cache(monkeypatch):
     assert ttls == [wayback.DEFAULT_TTL, wayback.DEFAULT_TTL, None]
 
 
-def test_cdx_search_surfaces_error_status(tmp_path, monkeypatch):
+def test_cdx_search_surfaces_error_status(monkeypatch):
     monkeypatch.setattr(
         wayback,
         "_http_get",
         lambda url: Fetched(url=url, status=503, mimetype="text/html", content=b"busy"),
     )
     with pytest.raises(WaybackError, match="503"):
-        wayback.cdx_search("https://example.com", directory=str(tmp_path))
+        wayback.cdx_search("https://example.com")
 
 
-def test_fetch_raw_not_archived_raises_no_snapshot(tmp_path, monkeypatch):
+def test_cdx_search_builds_url_and_mimetype_filters(monkeypatch):
+    from urllib.parse import parse_qs, urlsplit
+
+    seen = {}
+
+    def fake_http_get(url):
+        seen["url"] = url
+        return Fetched(url=url, status=200, mimetype="application/json", content=b"[]")
+
+    monkeypatch.setattr(wayback, "_http_get", fake_http_get)
+    wayback.cdx_search(
+        "https://example.com",
+        url_filter=r".*\.pdf$",
+        mimetype="application/pdf",
+        match="domain",
+    )
+    query = parse_qs(urlsplit(seen["url"]).query)
+    assert query["matchType"] == ["domain"]
+    assert r"original:.*\.pdf$" in query["filter"]
+    assert "mimetype:application/pdf" in query["filter"]
+
+
+def test_fetch_raw_not_archived_raises_no_snapshot(monkeypatch):
     # 404 with no redirect (served ts still equals the request) => URL isn't archived.
     monkeypatch.setattr(
         wayback,
@@ -486,11 +514,11 @@ def test_fetch_raw_not_archived_raises_no_snapshot(tmp_path, monkeypatch):
         lambda url: Fetched(url=url, status=404, mimetype="text/html", content=b"gone"),
     )
     with pytest.raises(NoSnapshotError) as exc:
-        wayback.fetch_raw("https://example.com", "20100101", directory=str(tmp_path))
+        wayback.fetch_raw("https://example.com", "20100101")
     assert "itself a 404" not in str(exc.value)
 
 
-def test_fetch_raw_pinned_404_hedges_message(tmp_path, monkeypatch):
+def test_fetch_raw_pinned_404_hedges_message(monkeypatch):
     # A full pinned stamp is served directly (no redirect), so a 404 there can also be
     # a real capture whose crawl-time status was 404 — the message must say so.
     monkeypatch.setattr(
@@ -499,9 +527,7 @@ def test_fetch_raw_pinned_404_hedges_message(tmp_path, monkeypatch):
         lambda url: Fetched(url=url, status=404, mimetype="text/html", content=b"gone"),
     )
     with pytest.raises(NoSnapshotError) as exc:
-        wayback.fetch_raw(
-            "https://example.com", "20100101120000", directory=str(tmp_path)
-        )
+        wayback.fetch_raw("https://example.com", "20100101120000")
     assert "itself a 404" in str(exc.value)
 
 
@@ -515,7 +541,7 @@ def test_converter_failure_is_a_wayback_error(monkeypatch):
         convert.doc_to_markdown(b"x", ".pdf")
 
 
-def test_fetch_raw_crawl_time_error_is_surfaced(tmp_path, monkeypatch):
+def test_fetch_raw_crawl_time_error_is_surfaced(monkeypatch):
     # A real capture was reached (served ts differs from the request) but its crawl-time
     # status was an error: surface the HTTP error, not "no snapshot".
     landed = "https://web.archive.org/web/20100101120000/https://example.com"
@@ -525,12 +551,12 @@ def test_fetch_raw_crawl_time_error_is_surfaced(tmp_path, monkeypatch):
         lambda url: Fetched(url=landed, status=500, mimetype="text/html", content=b"err"),
     )
     with pytest.raises(WaybackError) as exc:
-        wayback.fetch_raw("https://example.com", "2010", directory=str(tmp_path))
+        wayback.fetch_raw("https://example.com", "2010")
     assert not isinstance(exc.value, NoSnapshotError)
     assert "500" in str(exc.value)
 
 
-def test_cache_does_not_persist_error_responses(tmp_path):
+def test_cache_does_not_persist_error_responses():
     # a transient 503 must never be cached; with ttl=None it would poison forever
     calls = []
 
@@ -538,6 +564,6 @@ def test_cache_does_not_persist_error_responses(tmp_path):
         calls.append(1)
         return Fetched(url="u", status=503, mimetype="text/html", content=b"busy")
 
-    cache.get_or_fetch("http://x/e", fetch_error, ttl=None, directory=str(tmp_path))
-    cache.get_or_fetch("http://x/e", fetch_error, ttl=None, directory=str(tmp_path))
+    cache.get_or_fetch("http://x/e", fetch_error, ttl=None)
+    cache.get_or_fetch("http://x/e", fetch_error, ttl=None)
     assert len(calls) == 2

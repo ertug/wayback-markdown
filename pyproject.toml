@@ -1,22 +1,22 @@
 [project]
 name = "wayback-markdown"
 version = "0.1.0"
-description = "A Wayback Machine -> Markdown CLI for AI coding agents"
+description = "Let your AI agents browse the Wayback Machine in clean Markdown - an MCP server and CLI"
 readme = "README.md"
 requires-python = ">=3.10"
+keywords = ["mcp", "wayback-machine", "internet-archive", "markdown", "ai-agents"]
 dependencies = [
     "beautifulsoup4>=4.12",
     "httpx>=0.27",
     "markitdown[docx,pptx,pdf]>=0.1",
+    "mcp>=2.1,<3",
 ]
 
 [project.scripts]
 wayback-markdown = "wayback_markdown.cli:main"
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=8",
-]
+[dependency-groups]
+dev = ["pytest>=8"]
 
 [build-system]
 requires = ["hatchling"]

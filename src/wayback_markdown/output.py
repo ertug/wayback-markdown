@@ -56,7 +56,7 @@ def truncate(text: str, max_chars: int, offset: int = 0) -> Tuple[str, TruncInfo
 def truncation_marker(info: TruncInfo) -> str:
     return (
         f"\n\n[truncated: showing chars {info.offset}-{info.end} of {info.total} total. "
-        f"Re-run with --offset {info.end} for more.]"
+        f"Continue from offset {info.end} for more.]"
     )
 
 
